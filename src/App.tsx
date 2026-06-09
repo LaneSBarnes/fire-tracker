@@ -5,7 +5,6 @@ import fireIcon from "./assets/fire.webp";
 import fireGreyIcon from "./assets/fireGrey.webp";
 import planeIcon from "./assets/plane.png";
 import helicopterIcon from "./assets/helicopter.png";
-import type { FeatureCollection } from "geojson";
 import { renderToString } from "react-dom/server";
 
 import "mapbox-gl/dist/mapbox-gl.css";
@@ -21,6 +20,55 @@ function App() {
 
   const fireSourceId = "fires-data-source";
   const aircraftSourceId = "aircraft-data-source";
+  const aircraftPathsSourceId = "aircraft-paths-data-source";
+
+  const aircraftPaths = new Map<string, GeoJSON.Position[]>();
+
+  const updateAircraftPaths = (aircraftData: GeoJSON.FeatureCollection) => {
+    aircraftData.features.forEach(aircraft => {
+      const regId = aircraft.properties?.reg
+      const coords = (aircraft.geometry as GeoJSON.Point).coordinates
+
+      const aircraftPath = aircraftPaths.get(regId)
+      if (aircraftPath && aircraftPath.length > 0) {
+        const oldCoords = aircraftPath.at(-1);
+        if (oldCoords![0] !== coords[0] || oldCoords![1] !== coords[1]){
+          aircraftPath.push(coords)
+        }
+      }
+      else {
+        aircraftPaths.set(regId, [])
+        aircraftPaths.get(regId)!.push(coords)
+      }
+    })
+
+    console.log(aircraftPaths)
+  }
+
+  const getAircraftPathsGeoJson = () => {
+    const paths: GeoJSON.Position[][] = []
+    for (const [_, value] of aircraftPaths) {
+      const path = value
+      paths.push(path)
+    }
+
+    // Transform aircraft data into geoJSON
+    const geoJsonAircraftPaths: GeoJSON.FeatureCollection = {
+      type: "FeatureCollection",
+      features: paths.map((path: GeoJSON.Position[]) => {
+        return {
+          type: "Feature",
+          geometry: {
+            type: "LineString",
+            coordinates: path,
+          },
+          properties: {}
+        };
+      }),
+    };
+
+    return geoJsonAircraftPaths;
+  }
 
   useEffect(() => {
     mapRef.current = new mapboxgl.Map({
@@ -75,7 +123,7 @@ function App() {
           },
         });
 
-        getAircraft().then((aircraftData: FeatureCollection | undefined) => {
+        getAircraft().then((aircraftData: GeoJSON.FeatureCollection | undefined) => {
           if (aircraftData) {
             map.addSource(aircraftSourceId, {
               type: "geojson",
@@ -99,19 +147,43 @@ function App() {
                 "icon-rotate": ["get", "heading"],
               },
             });
+
+            updateAircraftPaths(aircraftData)
+
+            map.addSource(aircraftPathsSourceId, {
+              type: "geojson",
+              data: getAircraftPathsGeoJson(),
+            });
+
+            map.addLayer({
+              id: 'aircraft-paths-layer',
+              type: 'line',
+              source: aircraftPathsSourceId,
+              paint: {
+                'line-color': 'red',
+                'line-opacity': 1,
+                'line-width': 5
+              }
+            });
           }
         });
 
         setInterval(() => {
-          getAircraft().then((aircraftData: FeatureCollection | undefined) => {
+          getAircraft().then((aircraftData: GeoJSON.FeatureCollection | undefined) => {
             if (aircraftData) {
-              const source = map.getSource(
+              const aircraftSource = map.getSource(
                 aircraftSourceId,
               ) as GeoJSONSource;
-              source.setData(aircraftData);
+              aircraftSource.setData(aircraftData);
+
+              updateAircraftPaths(aircraftData)
+              const aircraftPathsSource = map.getSource(
+                aircraftPathsSourceId,
+              ) as GeoJSONSource;
+              aircraftPathsSource.setData(getAircraftPathsGeoJson());
             }
           });
-        }, 5000);
+        }, 1000);
 
         map.fitBounds(
           [
@@ -165,6 +237,12 @@ function App() {
 
       map.on("click", (e) => {
         console.log("Click at:", e.lngLat);
+
+        const features = map.queryRenderedFeatures(e.point, {
+          layers: ["aircraft-paths-layer"],
+        });
+
+        console.log("paths features", features);
       });
     }
 
@@ -204,7 +282,7 @@ function App() {
   );
 }
 
-const getAircraft = async (): Promise<FeatureCollection | undefined> => {
+const getAircraft = async (): Promise<GeoJSON.FeatureCollection | undefined> => {
   try {
     const response = await fetch("/api/aircraft");
 
@@ -216,7 +294,7 @@ const getAircraft = async (): Promise<FeatureCollection | undefined> => {
     console.log("aircraftData", aircraftData);
 
     // Transform aircraft data into geoJSON
-    const geoJsonAircraftData: FeatureCollection = {
+    const geoJsonAircraftData: GeoJSON.FeatureCollection = {
       type: "FeatureCollection",
       features: aircraftData.map((aircraft: any) => {
         return {
